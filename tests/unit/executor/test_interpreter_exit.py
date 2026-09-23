@@ -58,12 +58,14 @@ def escaping_exception():
     # point.
     exe = SingleNodeExecutor(max_workers=1)
     exe.submit(raise_error).result()
+    return exe
 
 
 def no_shutdown():
     # Same, but the task succeeds and shutdown() is still never called.
     exe = SingleNodeExecutor(max_workers=1)
     assert exe.submit(double, 21).result() == 42
+    return exe
 
 
 SCENARIOS = {"escaping_exception": escaping_exception, "no_shutdown": no_shutdown}
@@ -71,6 +73,9 @@ SCENARIOS = {"escaping_exception": escaping_exception, "no_shutdown": no_shutdow
 
 if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] in SCENARIOS:
-        SCENARIOS[sys.argv[1]]()
+        # Bound at module scope on purpose: as in a real script, the executor must live
+        # until interpreter finalization, so that its __del__ -> shutdown() runs there.
+        # Left local to the scenario function it is collected early and the hang is missed.
+        exe = SCENARIOS[sys.argv[1]]()
     else:
         unittest.main()
