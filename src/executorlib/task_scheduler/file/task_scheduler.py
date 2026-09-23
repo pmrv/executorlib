@@ -90,6 +90,7 @@ class FileTaskScheduler(TaskSchedulerBase):
             Thread(
                 target=execute_tasks_h5,
                 kwargs=self._process_kwargs,
+                daemon=True,
             )
         )
 
