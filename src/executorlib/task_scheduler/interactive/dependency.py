@@ -61,6 +61,7 @@ class DependencyTaskScheduler(TaskSchedulerBase):
             Thread(
                 target=_execute_tasks_with_dependencies,
                 kwargs=self._process_kwargs,
+                daemon=True,
             )
         )
         self._future_hash_dict: dict = {}

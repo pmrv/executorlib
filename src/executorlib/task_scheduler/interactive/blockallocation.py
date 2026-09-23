@@ -91,6 +91,7 @@ class BlockAllocationTaskScheduler(TaskSchedulerBase):
                 Thread(
                     target=_execute_multiple_tasks,
                     kwargs=self._worker_kwargs(worker_id),
+                    daemon=True,
                 )
                 for worker_id in range(self._max_workers)
             ],
@@ -140,6 +141,7 @@ class BlockAllocationTaskScheduler(TaskSchedulerBase):
                     Thread(
                         target=_execute_multiple_tasks,
                         kwargs=self._worker_kwargs(worker_id),
+                        daemon=True,
                     )
                     for worker_id in range(old_max_workers, max_workers)
                 ]

@@ -71,6 +71,7 @@ class OneProcessTaskScheduler(TaskSchedulerBase):
             Thread(
                 target=_execute_single_task,
                 kwargs=executor_kwargs,
+                daemon=True,
             )
         )
 
@@ -219,6 +220,7 @@ def _wrap_execute_task_in_separate_process(
     process = Thread(
         target=_execute_task_in_thread,
         kwargs=task_kwargs,
+        daemon=True,
     )
     process.start()
     return process, active_task_dict
