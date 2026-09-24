@@ -48,10 +48,6 @@ def raise_error():
     raise ValueError("deliberate failure")
 
 
-def double(i):
-    return 2 * i
-
-
 def escaping_exception():
     # No context manager and no shutdown(); the exception is deliberately not caught, so
     # it propagates out of the program exactly as it does from a console-script entry
@@ -62,9 +58,12 @@ def escaping_exception():
 
 
 def no_shutdown():
-    # Same, but the task succeeds and shutdown() is still never called.
+    # Same, but the task succeeds and shutdown() is still never called. A builtin on
+    # purpose: with a function defined in this module the executor happens to be torn
+    # down early enough that the hang only shows intermittently; with a builtin it
+    # hangs every time on a scheduler without the exit hook.
     exe = SingleNodeExecutor(max_workers=1)
-    assert exe.submit(double, 21).result() == 42
+    assert exe.submit(sum, [20, 22]).result() == 42
     return exe
 
 
