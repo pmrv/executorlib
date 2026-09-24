@@ -1,6 +1,6 @@
+import atexit
 import contextlib
 import queue
-import threading
 import time
 import weakref
 from concurrent.futures import (
@@ -37,17 +37,19 @@ def _python_exit() -> None:
     the interpreter goes, send each scheduler the same shutdown message ``shutdown()``
     sends, which is what makes the worker processes exit on their own.
 
-    Registered with ``threading._register_atexit`` rather than ``atexit.register``,
-    following ``concurrent.futures.thread``: ``atexit`` callbacks run *after*
-    ``threading._shutdown()``, which is too late to influence the task threads.
+    Registered with the public ``atexit.register``. CPython runs ``atexit`` callbacks
+    *after* ``threading._shutdown()`` has joined every non-daemon thread, so this only
+    runs at all because the task scheduler threads are daemon threads: were any of them
+    non-daemon again, the interpreter would block in that join first and never get here.
+    ``concurrent.futures.thread`` uses the private ``threading._register_atexit`` because
+    its worker threads are non-daemon; ours are not, so the public hook is enough.
     """
     for task_scheduler in list(_task_scheduler_set):
         with contextlib.suppress(Exception):
             task_scheduler._shutdown_at_interpreter_exit()
 
 
-if hasattr(threading, "_register_atexit"):  # pragma: no cover - private CPython API
-    threading._register_atexit(_python_exit)
+atexit.register(_python_exit)
 
 
 def validate_resource_dict(resource_dict: dict):
