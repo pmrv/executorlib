@@ -1,5 +1,8 @@
 import contextlib
 import queue
+import threading
+import time
+import weakref
 from concurrent.futures import (
     Executor as FutureExecutor,
 )
@@ -12,6 +15,39 @@ from typing import Callable, Optional, Union
 from executorlib.standalone.inputcheck import check_resource_dict
 from executorlib.standalone.queue import cancel_items_in_queue
 from executorlib.standalone.serialize import cloudpickle_register
+
+# How long the interpreter-exit hook waits for the workers to go away. The hook runs while
+# the interpreter is shutting down, so it must be bounded: blocking here would recreate the
+# very deadlock the daemon threads were meant to prevent.
+_SHUTDOWN_AT_EXIT_TIMEOUT: float = 5.0
+
+# Task schedulers which may still have running workers. Weak, like the standard library's
+# ``concurrent.futures.thread._threads_queues``: a scheduler which has been garbage
+# collected has already run ``__del__`` -> ``shutdown(wait=False)``, so it needs nothing
+# from us.
+_task_scheduler_set: "weakref.WeakSet" = weakref.WeakSet()
+
+
+def _python_exit() -> None:
+    """Tell the workers of every live task scheduler to shut down.
+
+    The task scheduler threads are daemon threads, so the interpreter can exit without
+    them -- but a worker *process* which is still running would simply be abandoned, and
+    under a batch scheduler an orphaned worker keeps the whole allocation alive. So before
+    the interpreter goes, send each scheduler the same shutdown message ``shutdown()``
+    sends, which is what makes the worker processes exit on their own.
+
+    Registered with ``threading._register_atexit`` rather than ``atexit.register``,
+    following ``concurrent.futures.thread``: ``atexit`` callbacks run *after*
+    ``threading._shutdown()``, which is too late to influence the task threads.
+    """
+    for task_scheduler in list(_task_scheduler_set):
+        with contextlib.suppress(Exception):
+            task_scheduler._shutdown_at_interpreter_exit()
+
+
+if hasattr(threading, "_register_atexit"):  # pragma: no cover - private CPython API
+    threading._register_atexit(_python_exit)
 
 
 def validate_resource_dict(resource_dict: dict):
@@ -52,6 +88,7 @@ class TaskSchedulerBase(FutureExecutor):
         self._future_queue: Optional[queue.Queue] = queue.Queue()
         self._process: Optional[Union[Thread, list[Thread]]] = None
         self._validator = validator
+        _task_scheduler_set.add(self)
 
     @property
     def max_workers(self) -> Optional[int]:
@@ -262,6 +299,43 @@ class TaskSchedulerBase(FutureExecutor):
         if self._future_queue is not None:
             queue_size = self._future_queue.qsize()
         return queue_size
+
+    def _shutdown_at_interpreter_exit(
+        self, timeout: float = _SHUTDOWN_AT_EXIT_TIMEOUT
+    ) -> None:
+        """Best-effort shutdown from the interpreter-exit hook.
+
+        Deliberately not ``shutdown()``: that joins unconditionally, and an unbounded join
+        while the interpreter is tearing down would hang the process. Here the workers are
+        *told* to stop and then given a bounded grace period; if they do not manage it the
+        daemon threads are abandoned, which is no worse than not trying.
+
+        Args:
+            timeout (float): total seconds to wait for all task threads to finish.
+        """
+        future_queue = self._future_queue
+        process = self._process
+        if future_queue is None or process is None:
+            return
+        process_lst = process if isinstance(process, list) else [process]
+        # One message per task thread -- each consumes exactly one and stops.
+        for _ in process_lst:
+            with contextlib.suppress(Exception):
+                future_queue.put({"shutdown": True, "wait": False})
+        deadline = time.monotonic() + timeout
+        for process_instance in process_lst:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                break
+            with contextlib.suppress(Exception):
+                process_instance.join(timeout=remaining)
+        # Mark the scheduler shut down, exactly as ``shutdown()`` does. Without this a
+        # later ``shutdown()`` -- in particular the one ``__del__`` runs when the
+        # interpreter clears module globals -- would enqueue a second shutdown message
+        # that no task thread is left to acknowledge, and its ``queue.join()`` would then
+        # block forever. That reintroduces the original hang by a new route.
+        self._process = None
+        self._future_queue = None
 
     def __del__(self):
         """
